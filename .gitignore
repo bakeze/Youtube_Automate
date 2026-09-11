@@ -18,3 +18,9 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# App locale
+token.json
+settings.json
+queue_draft.json
+videos/

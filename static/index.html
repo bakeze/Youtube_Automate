@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Automate</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%234f46e5'/><path d='M40 32l28 18-28 18z' fill='white'/></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M9 7.5l8 4.5-8 4.5z" fill="currentColor"/></svg>
+    </span>
+    <div>
+      <div class="brand-name">YouTube Automate</div>
+      <div class="brand-sub">Planification de Shorts</div>
+    </div>
+  </div>
+
+  <div class="account" id="account">
+    <span class="dot" id="account-dot"></span>
+    <img id="account-avatar" class="avatar" alt="" hidden>
+    <span class="account-label" id="account-label">Vérification…</span>
+    <button class="btn btn-ghost btn-sm" id="btn-account">Connecter</button>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button class="tab is-active" data-tab="queue" role="tab">File d'attente <span class="pill" id="count-queue">0</span></button>
+  <button class="tab" data-tab="history" role="tab">Historique <span class="pill" id="count-history">0</span></button>
+  <button class="tab" data-tab="settings" role="tab">Réglages</button>
+</nav>
+
+<main>
+  <!-- ============================ FILE D'ATTENTE ============================ -->
+  <section class="panel is-active" id="panel-queue">
+
+    <div class="connect-card" id="connect-card" hidden>
+      <div class="connect-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+          <rect x="3" y="6" width="18" height="12" rx="3"/><path d="M10.5 9.5l4.5 2.5-4.5 2.5z" fill="currentColor" stroke="none"/>
+        </svg>
+      </div>
+      <h2>Connectez votre compte YouTube</h2>
+      <p>Une fenêtre Google s'ouvre le temps de l'autorisation, puis se referme toute seule. Tout le reste se passe ici.</p>
+      <button class="btn btn-primary btn-lg" id="btn-connect">Connecter mon compte YouTube</button>
+      <p class="connect-hint" id="connect-hint"></p>
+    </div>
+
+    <div id="queue-workspace">
+      <div class="card scheduler">
+        <div class="card-head">
+          <h3>Programmation</h3>
+          <span class="muted" id="scheduler-summary"></span>
+        </div>
+        <div class="scheduler-grid">
+          <label class="field">
+            <span>Première publication</span>
+            <input type="date" id="sched-date">
+          </label>
+          <label class="field">
+            <span>Heure</span>
+            <input type="time" id="sched-time" step="300">
+          </label>
+          <label class="field field-narrow">
+            <span>Intervalle</span>
+            <div class="input-suffix">
+              <input type="number" id="sched-interval" min="1" max="365" value="1">
+              <em>jour(s)</em>
+            </div>
+          </label>
+          <button class="btn btn-secondary" id="btn-apply-sched">Appliquer à la file</button>
+        </div>
+      </div>
+
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="file-input" accept="video/*" multiple hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 16V4m0 0L8 8m4-4l4 4"/><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/>
+        </svg>
+        <p><strong>Glissez vos vidéos ici</strong> ou <button class="linkbtn" id="btn-browse">parcourez vos fichiers</button></p>
+        <span class="muted">Elles sont copiées dans le dossier <code>videos/</code> · mp4, mov, avi, mkv, webm</span>
+        <div class="upload-progress" id="copy-progress" hidden><div class="bar"><i></i></div><span></span></div>
+      </div>
+
+      <div class="list-head">
+        <label class="checkbox"><input type="checkbox" id="select-all"><span></span>Tout sélectionner</label>
+        <div class="list-head-actions">
+          <button class="btn btn-ghost btn-sm" id="btn-refresh">Rafraîchir</button>
+        </div>
+      </div>
+
+      <div id="queue-list" class="queue-list"></div>
+
+      <div class="empty" id="queue-empty" hidden>
+        <h4>Aucune vidéo en attente</h4>
+        <p>Déposez des fichiers ci-dessus pour composer votre planning.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== HISTORIQUE ============================== -->
+  <section class="panel" id="panel-history">
+    <div class="card">
+      <div class="card-head">
+        <h3>Vidéos envoyées</h3>
+        <input type="search" id="history-search" class="search" placeholder="Rechercher…">
+      </div>
+      <div class="table-wrap">
+        <table class="table" id="history-table">
+          <thead>
+            <tr><th>Vidéo</th><th>Publication</th><th>Statut</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="empty" id="history-empty" hidden><h4>Rien pour l'instant</h4><p>Les vidéos envoyées apparaîtront ici.</p></div>
+    </div>
+  </section>
+
+  <!-- =============================== RÉGLAGES =============================== -->
+  <section class="panel" id="panel-settings">
+    <div class="card">
+      <div class="card-head"><h3>Valeurs par défaut</h3><span class="muted">Appliquées aux nouvelles vidéos</span></div>
+      <div class="settings-grid">
+        <label class="field"><span>Heure de publication</span><input type="time" id="set-time" step="300"></label>
+        <label class="field"><span>Intervalle entre deux vidéos</span>
+          <div class="input-suffix"><input type="number" id="set-interval" min="1" max="365"><em>jour(s)</em></div>
+        </label>
+        <label class="field"><span>Catégorie YouTube</span><select id="set-category"></select></label>
+        <label class="field"><span>ID de la vidéo similaire</span><input type="text" id="set-similar" placeholder="yM_9izyJcys"></label>
+        <label class="field field-wide"><span>Modèle de description <em class="muted">— {similar_video_id} est remplacé automatiquement</em></span>
+          <textarea id="set-description" rows="4"></textarea>
+        </label>
+        <label class="field field-wide"><span>Tags par défaut <em class="muted">— séparés par des virgules</em></span>
+          <input type="text" id="set-tags" placeholder="shorts, viral, motivation">
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>Options</h3></div>
+      <label class="switch-row">
+        <div><strong>Générer les titres automatiquement</strong><span>Un titre viral est proposé pour chaque nouvelle vidéo. Vous pouvez toujours le modifier.</span></div>
+        <input type="checkbox" id="set-autotitle" class="switch">
+      </label>
+      <label class="switch-row">
+        <div><strong>Contenu destiné aux enfants</strong><span>Déclaration « Made for Kids » envoyée à YouTube.</span></div>
+        <input type="checkbox" id="set-kids" class="switch">
+      </label>
+      <label class="switch-row">
+        <div><strong>Afficher les infos de ma chaîne</strong><span>Nom, avatar et abonnés dans l'en-tête. Demande une autorisation de lecture supplémentaire : une reconnexion sera nécessaire.</span></div>
+        <input type="checkbox" id="set-channel" class="switch">
+      </label>
+    </div>
+
+    <div class="card card-danger">
+      <div class="card-head"><h3>Compte</h3></div>
+      <div class="danger-row">
+        <div><strong>Déconnecter le compte YouTube</strong><span class="muted">Le jeton local est supprimé. Les vidéos déjà programmées ne sont pas affectées.</span></div>
+        <button class="btn btn-danger-ghost" id="btn-logout">Déconnecter</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ============================== BARRE D'ACTION ============================== -->
+<div class="actionbar" id="actionbar" hidden>
+  <div class="actionbar-inner">
+    <div class="actionbar-info" id="actionbar-info"></div>
+    <div class="actionbar-progress" id="actionbar-progress" hidden>
+      <div class="progress-line">
+        <span class="progress-label" id="progress-label"></span>
+        <span class="progress-count" id="progress-count"></span>
+      </div>
+      <div class="bar"><i id="progress-bar"></i></div>
+    </div>
+    <div class="actionbar-buttons">
+      <button class="btn btn-ghost" id="btn-cancel" hidden>Annuler</button>
+      <button class="btn btn-primary" id="btn-start">Envoyer sur YouTube</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<template id="tpl-queue-item">
+  <article class="qitem" draggable="true">
+    <div class="qitem-main">
+      <span class="drag" title="Glisser pour réordonner">
+        <svg viewBox="0 0 16 16"><circle cx="6" cy="3" r="1.3"/><circle cx="10" cy="3" r="1.3"/><circle cx="6" cy="8" r="1.3"/><circle cx="10" cy="8" r="1.3"/><circle cx="6" cy="13" r="1.3"/><circle cx="10" cy="13" r="1.3"/></svg>
+      </span>
+      <label class="checkbox"><input type="checkbox" class="q-enabled" checked><span></span></label>
+      <div class="thumb"><video muted preload="metadata" playsinline></video><span class="thumb-fallback">▶</span></div>
+      <div class="qitem-body">
+        <div class="title-row">
+          <input type="text" class="q-title" maxlength="100" placeholder="Titre de la vidéo">
+          <button class="iconbtn q-regen" title="Regénérer un titre">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/></svg>
+          </button>
+          <span class="counter"></span>
+        </div>
+        <div class="meta-row">
+          <span class="filename"></span>
+          <span class="sep">·</span>
+          <span class="filesize"></span>
+        </div>
+      </div>
+      <div class="qitem-schedule">
+        <input type="date" class="q-date">
+        <input type="time" class="q-time" step="300">
+      </div>
+      <div class="qitem-actions">
+        <button class="iconbtn q-toggle" title="Description et tags">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <button class="iconbtn iconbtn-danger q-remove" title="Retirer de la file">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="qitem-details" hidden>
+      <label class="field field-wide"><span>Description</span><textarea class="q-description" rows="3"></textarea></label>
+      <label class="field field-wide"><span>Tags <em class="muted">— séparés par des virgules</em></span><input type="text" class="q-tags"></label>
+    </div>
+    <div class="qitem-status" hidden></div>
+  </article>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
