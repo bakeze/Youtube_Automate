@@ -21,6 +21,7 @@ Thumbs.db
 
 # App locale
 token.json
+.session_secret
 settings.json
 queue_draft.json
 videos/

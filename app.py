@@ -1,16 +1,26 @@
-"""YouTube Automate — serveur local + interface web.
+"""YouTube Automate — serveur local ou distant + interface web.
 
 Lancement :  python app.py
+
+Variables d'environnement (toutes optionnelles) :
+  YTA_HOST        interface d'écoute       (défaut 127.0.0.1 ; 0.0.0.0 pour un serveur)
+  YTA_PORT        port d'écoute            (défaut 8787)
+  YTA_PASSWORD    mot de passe d'accès     (obligatoire hors loopback)
+  YTA_PUBLIC_URL  adresse publique https   (obligatoire hors loopback, pour le retour OAuth)
+  YTA_NO_BROWSER  n'ouvre pas de navigateur au démarrage
 """
+import hmac
+import hashlib
 import os
+import secrets
 import sys
 import threading
 import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import config
@@ -21,11 +31,80 @@ import youtube_client as yt
 if hasattr(sys.stdout, "reconfigure"):  # console Windows en cp1252
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
-HOST = "127.0.0.1"
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+SECRET_FILE = BASE_DIR / ".session_secret"
+
+HOST = os.environ.get("YTA_HOST", "127.0.0.1").strip()
 PORT = int(os.environ.get("YTA_PORT", "8787"))
+PASSWORD = os.environ.get("YTA_PASSWORD", "").strip()
+PUBLIC_URL = os.environ.get("YTA_PUBLIC_URL", "").strip().rstrip("/")
+
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+IS_LOCAL = HOST in LOOPBACK
+COOKIE_NAME = "yta_session"
 
 app = FastAPI(title="YouTube Automate", docs_url=None, redoc_url=None)
+
+
+# ------------------------------------------------------------ authentification
+
+def _session_secret():
+    """Secret stable entre deux redémarrages, pour ne pas invalider les sessions."""
+    if SECRET_FILE.exists():
+        return SECRET_FILE.read_bytes()
+    value = secrets.token_bytes(32)
+    SECRET_FILE.write_bytes(value)
+    return value
+
+
+SECRET = _session_secret()
+
+
+def _session_token():
+    return hmac.new(SECRET, PASSWORD.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _oauth_redirect_uri():
+    """None en local (retour loopback), URL de l'app en mode serveur."""
+    return f"{PUBLIC_URL}/oauth/callback" if PUBLIC_URL else None
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    if not PASSWORD:  # usage local sans mot de passe
+        return await call_next(request)
+
+    path = request.url.path
+    if path in ("/login", "/api/login") or path.startswith("/static/"):
+        return await call_next(request)
+
+    if hmac.compare_digest(request.cookies.get(COOKIE_NAME, ""), _session_token()):
+        return await call_next(request)
+
+    if path.startswith("/api/"):
+        return JSONResponse(status_code=401, content={"detail": "Session expirée."})
+    return RedirectResponse("/login", status_code=303)
+
+
+@app.get("/login")
+def login_page():
+    return FileResponse(STATIC_DIR / "login.html")
+
+
+@app.post("/api/login")
+def login(payload: dict = Body(...)):
+    if not PASSWORD:
+        return {"ok": True}
+    if not hmac.compare_digest(str(payload.get("password", "")), PASSWORD):
+        raise HTTPException(401, "Mot de passe incorrect.")
+
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        COOKIE_NAME, _session_token(), httponly=True, samesite="lax",
+        secure=PUBLIC_URL.startswith("https://"), max_age=60 * 60 * 24 * 30,
+    )
+    return response
 
 # ---------------------------------------------------------------- état du job
 
@@ -36,6 +115,7 @@ JOB = {
     "total": 0,
     "done": 0,
     "failed": 0,
+    "freed": 0,
     "current": None,
     "current_progress": 0.0,
     "started_at": None,
@@ -106,11 +186,12 @@ def _run_job(filenames):
                     finished_at=datetime.now().isoformat(timespec="seconds"))
         return
 
+    delete_after = bool(settings.get("delete_after_upload"))
     items = [i for i in qm.as_list()
              if i.get("enabled", True) and i.get("exists")
              and (not filenames or i["filename"] in filenames)]
 
-    _job_update(total=len(items), done=0, failed=0, error=None)
+    _job_update(total=len(items), done=0, failed=0, freed=0, error=None)
 
     for item in items:
         if _cancelled():
@@ -140,6 +221,8 @@ def _run_job(filenames):
                 cancelled=_cancelled,
             )
 
+            # L'historique est écrit AVANT toute suppression : si le nettoyage
+            # échoue, la vidéo reste malgré tout marquée comme envoyée.
             history = config.load_history()
             history[name] = {
                 "video_id": video_id,
@@ -148,12 +231,27 @@ def _run_job(filenames):
                 "scheduled_publish": publish_dt.strftime(qm.ISO_MINUTES),
                 "scheduled_publish_utc": publish_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "status": "scheduled",
+                "size": item.get("size", 0),
             }
             config.save_history(history)
-            qm.remove(name)
+
+            freed = 0
+            if delete_after:
+                try:
+                    qm.remove(name, delete_file=True)
+                    freed = item.get("size", 0)
+                    history[name]["file_deleted"] = True
+                    config.save_history(history)
+                except OSError as exc:
+                    qm.remove(name)
+                    _job_log(name, "warning",
+                             f"Vidéo envoyée, mais le fichier n'a pas pu être supprimé : {exc}")
+            else:
+                qm.remove(name)
 
             with JOB_LOCK:
                 JOB["done"] += 1
+                JOB["freed"] += freed
             _job_log(name, "ok", item["title"], video_id, item["publish_at"])
 
         except InterruptedError:
@@ -201,12 +299,30 @@ def get_state():
 def auth_start():
     settings = config.load_settings()
     try:
-        url = yt.start_auth(config.scopes_for(settings))
+        url = yt.start_auth(config.scopes_for(settings), _oauth_redirect_uri())
     except FileNotFoundError as exc:
+        raise HTTPException(400, str(exc))
+    except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, _friendly_error(exc))
     return {"auth_url": url}
+
+
+@app.get("/oauth/callback")
+def oauth_callback(request: Request):
+    """Retour de Google en mode serveur (YTA_PUBLIC_URL défini)."""
+    params = request.query_params
+    if params.get("error"):
+        return HTMLResponse(yt.CALLBACK_KO)
+
+    # Google renvoie sur l'URL publique ; c'est elle qui doit servir à l'échange.
+    response_url = f"{PUBLIC_URL}/oauth/callback?{request.url.query}"
+    try:
+        yt.finish_auth(response_url, params.get("state", ""))
+    except Exception:  # noqa: BLE001 - le détail est déjà dans auth_state()
+        return HTMLResponse(yt.CALLBACK_KO, status_code=400)
+    return HTMLResponse(yt.CALLBACK_OK)
 
 
 @app.get("/api/auth/status")
@@ -244,7 +360,8 @@ def post_settings(payload: dict = Body(...)):
         if isinstance(raw, str):
             raw = [t.strip() for t in raw.split(",")]
         clean["tags"] = [t for t in (raw or []) if t][:30]
-    for key in ("made_for_kids", "auto_title", "show_channel_info"):
+    for key in ("made_for_kids", "auto_title", "show_channel_info",
+                "delete_after_upload"):
         if key in payload:
             clean[key] = bool(payload[key])
     return config.save_settings(clean)
@@ -348,7 +465,7 @@ def job_start(payload: dict = Body(default={})):
         if JOB["running"]:
             raise HTTPException(409, "Un envoi est déjà en cours.")
         JOB.update({"running": True, "cancel": False, "total": 0, "done": 0,
-                    "failed": 0, "current": None, "current_progress": 0.0,
+                    "failed": 0, "freed": 0, "current": None, "current_progress": 0.0,
                     "error": None, "log": [],
                     "started_at": datetime.now().isoformat(timespec="seconds"),
                     "finished_at": None})
@@ -391,12 +508,51 @@ def unhandled(request, exc):  # noqa: ARG001
     return JSONResponse(status_code=500, content={"detail": _friendly_error(exc)})
 
 
+def _check_public_setup():
+    """Refuse d'exposer l'application sans mot de passe ni retour OAuth valide."""
+    problems = []
+    if not PASSWORD:
+        problems.append(
+            "YTA_PASSWORD n'est pas défini : n'importe qui atteignant le port "
+            "pourrait publier sur votre chaîne YouTube."
+        )
+    if not PUBLIC_URL:
+        problems.append(
+            "YTA_PUBLIC_URL n'est pas défini : Google ne saurait pas où renvoyer "
+            "l'utilisateur après l'autorisation, la connexion échouerait."
+        )
+    elif not PUBLIC_URL.startswith("https://"):
+        problems.append(
+            f"YTA_PUBLIC_URL vaut « {PUBLIC_URL} » : Google exige https:// en "
+            "dehors de localhost."
+        )
+
+    if problems:
+        print("\n  Démarrage refusé — l'application écouterait sur "
+              f"{HOST} sans configuration sûre :\n", flush=True)
+        for problem in problems:
+            print(f"    - {problem}", flush=True)
+        print("\n  Voir la section « Mise en ligne sur un serveur » du README.\n", flush=True)
+        sys.exit(1)
+
+
 def main():
     import uvicorn
 
-    url = f"http://{HOST}:{PORT}"
-    print(f"\n  YouTube Automate\n  Interface : {url}\n  (Ctrl+C pour arrêter)\n", flush=True)
-    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    if not IS_LOCAL:
+        _check_public_setup()
+
+    shown = PUBLIC_URL or f"http://{HOST}:{PORT}"
+    print(f"\n  YouTube Automate\n  Interface : {shown}", flush=True)
+    if PASSWORD:
+        print("  Accès protégé par mot de passe", flush=True)
+    if config.load_settings().get("delete_after_upload"):
+        print("  Les fichiers sont supprimés après envoi réussi", flush=True)
+    print("  (Ctrl+C pour arrêter)\n", flush=True)
+
+    if IS_LOCAL and not os.environ.get("YTA_NO_BROWSER"):
+        threading.Timer(1.0, lambda: webbrowser.open(shown)).start()
+
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
 
 

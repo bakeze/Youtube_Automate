@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connexion — YouTube Automate</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%234f46e5'/><path d='M40 32l28 18-28 18z' fill='white'/></svg>">
+<style>
+  body { padding: 0; display: grid; place-items: center; min-height: 100vh; }
+  .login { width: 100%; max-width: 340px; padding: 32px; text-align: center; }
+  .login .brand-mark { width: 42px; height: 42px; margin: 0 auto 18px; border-radius: 12px; }
+  .login .brand-mark svg { width: 26px; height: 26px; }
+  .login h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; letter-spacing: -.01em; }
+  .login p { margin: 0 0 22px; color: var(--muted); font-size: 13px; }
+  .login form { display: flex; flex-direction: column; gap: 10px; }
+  .login .error { min-height: 18px; font-size: 12.5px; color: var(--danger); }
+</style>
+</head>
+<body>
+<div class="login">
+  <span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 24 24"><path d="M9 7.5l8 4.5-8 4.5z" fill="currentColor"/></svg>
+  </span>
+  <h1>YouTube Automate</h1>
+  <p>Cette instance est protégée par un mot de passe.</p>
+  <form id="form">
+    <input type="password" id="password" placeholder="Mot de passe" autocomplete="current-password" autofocus required>
+    <button class="btn btn-primary" type="submit">Se connecter</button>
+    <span class="error" id="error"></span>
+  </form>
+</div>
+
+<script>
+document.getElementById("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const error = document.getElementById("error");
+  error.textContent = "";
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: document.getElementById("password").value }),
+    });
+    if (res.ok) { window.location.href = "/"; return; }
+    const data = await res.json().catch(() => ({}));
+    error.textContent = data.detail || "Mot de passe incorrect.";
+  } catch {
+    error.textContent = "Serveur injoignable.";
+  }
+});
+</script>
+</body>
+</html>

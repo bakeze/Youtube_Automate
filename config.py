@@ -28,6 +28,7 @@ DEFAULT_SETTINGS = {
     "made_for_kids": False,
     "auto_title": True,
     "show_channel_info": False,
+    "delete_after_upload": True,
 }
 
 CATEGORIES = [

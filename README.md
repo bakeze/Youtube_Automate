@@ -72,8 +72,102 @@ elle se referme toute seule. C'est fini — vous n'aurez plus à le refaire.
 | **Exclure une vidéo** | Décochez-la : elle reste dans la liste mais ne sera pas envoyée. |
 | **Envoyer** | Bouton bleu en bas. Les vidéos partent en privé, YouTube les publie tout seul aux dates prévues. |
 
+Par défaut, **le fichier local est supprimé dès que YouTube a accusé réception** : la vidéo
+est hébergée chez YouTube, le fichier ne sert plus à rien et l'espace disque est libéré
+immédiatement. Un envoi qui échoue ne supprime rien et la vidéo reste dans la file pour
+être réessayée. L'interrupteur se trouve dans **Réglages → Supprimer les fichiers après
+envoi**.
+
 L'onglet **Historique** liste tout ce qui a été envoyé, avec un lien vers YouTube Studio.
 L'onglet **Réglages** contient les valeurs par défaut (heure, intervalle, tags, description…).
+
+---
+
+## Mise en ligne sur un serveur
+
+L'application est prévue pour tourner sur votre poste. Pour l'héberger, le point délicat
+est le retour de Google après autorisation : il doit revenir **sur le serveur**, pas sur
+le navigateur qui a ouvert la fenêtre. Deux approches.
+
+### Option A — Tunnel SSH (aucune configuration)
+
+Le plus simple : l'application reste en écoute locale sur le serveur, et vous y accédez
+par un tunnel depuis votre poste. Tout se comporte comme en local, y compris la connexion
+Google, et rien n'est exposé sur Internet.
+
+Sur le serveur :
+
+```bash
+YTA_NO_BROWSER=1 python app.py
+```
+
+Depuis votre poste :
+
+```bash
+ssh -L 8787:localhost:8787 utilisateur@mon-serveur
+```
+
+Puis ouvrez <http://localhost:8787>. Le `client_secret.json` de type
+**Application de bureau** créé à l'étape 2 convient tel quel.
+
+### Option B — Exposition publique en HTTPS
+
+Nécessaire si vous voulez y accéder sans tunnel. Il faut un nom de domaine et un
+certificat : **Google refuse une adresse de retour en `http://` en dehors de localhost.**
+
+1. **Créer un identifiant OAuth de type « Application Web »** (et non « Application de
+   bureau ») dans Google Cloud Console, avec comme URI de redirection autorisée exactement
+   `https://votre-domaine.fr/oauth/callback`. Téléchargez-le comme `client_secret.json`.
+2. **Mettre un reverse proxy HTTPS devant l'application** (Caddy, ou nginx + certbot) qui
+   transmet vers `127.0.0.1:8787`.
+3. **Lancer l'application** avec ces variables :
+
+```bash
+export YTA_HOST=127.0.0.1                        # le proxy s'occupe de l'extérieur
+export YTA_PORT=8787
+export YTA_PASSWORD='un-mot-de-passe-solide'     # protège l'interface
+export YTA_PUBLIC_URL='https://votre-domaine.fr' # adresse de retour OAuth
+export YTA_NO_BROWSER=1
+python app.py
+```
+
+L'application **refuse de démarrer** si elle écoute au-delà de `localhost` sans mot de
+passe ou sans adresse publique en HTTPS, et explique ce qui manque.
+
+### Service systemd
+
+```ini
+[Unit]
+Description=YouTube Automate
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/youtube-automate
+Environment=YTA_PASSWORD=un-mot-de-passe-solide
+Environment=YTA_PUBLIC_URL=https://votre-domaine.fr
+Environment=YTA_NO_BROWSER=1
+ExecStart=/usr/bin/python3 app.py
+Restart=on-failure
+User=youtube
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Variables d'environnement
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `YTA_HOST` | `127.0.0.1` | interface d'écoute |
+| `YTA_PORT` | `8787` | port d'écoute |
+| `YTA_PASSWORD` | *(vide)* | mot de passe de l'interface ; obligatoire hors localhost |
+| `YTA_PUBLIC_URL` | *(vide)* | adresse publique https, pour le retour OAuth |
+| `YTA_NO_BROWSER` | *(vide)* | n'ouvre pas de navigateur au démarrage |
+
+> Les vidéos transitent par votre connexion **deux fois** : de votre poste vers le serveur,
+> puis du serveur vers YouTube. Si vos fichiers sont volumineux, déposez-les directement
+> dans le dossier `videos/` du serveur (par `scp` ou `rsync`) et utilisez **Rafraîchir**
+> dans l'interface.
 
 ---
 
@@ -94,6 +188,11 @@ Votre adresse Gmail n'est pas dans la liste des utilisateurs test (étape 2.4).
 **Le port 8787 est déjà utilisé.**
 Lancez avec un autre port : `YTA_PORT=8788 python app.py`
 (sous PowerShell : `$env:YTA_PORT=8788; python app.py`).
+
+**J'ai perdu mes fichiers vidéo après un envoi.**
+C'est le comportement par défaut : ils sont supprimés une fois reçus par YouTube pour
+libérer l'espace. Gardez une copie ailleurs si vous en avez besoin, ou décochez
+**Réglages → Supprimer les fichiers après envoi**.
 
 **Quota d'upload atteint.**
 YouTube limite le nombre d'envois quotidiens par projet. Réessayez le lendemain.
@@ -130,5 +229,5 @@ videos/             vos vidéos à envoyer
 upload_shorts.py    ancien script en ligne de commande (conservé)
 ```
 
-Fichiers créés automatiquement, à ne pas partager : `token.json`, `settings.json`,
-`queue_draft.json`.
+Fichiers créés automatiquement, à ne pas partager : `token.json`, `.session_secret`,
+`settings.json`, `queue_draft.json`.

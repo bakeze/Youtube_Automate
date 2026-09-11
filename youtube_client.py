@@ -55,6 +55,18 @@ CALLBACK_KO = _page("#ef4444", "&#10005;", "Connexion annul&eacute;e",
 _state = {"status": "idle", "error": None}
 _lock = threading.Lock()
 
+# Flows OAuth en attente de retour, en mode serveur : state -> flow.
+_pending = {}
+
+
+def _loopback(url):
+    return url.startswith(("http://localhost", "http://127.0.0.1"))
+
+
+def _as_secure(url):
+    """oauthlib refuse un redirect http:// ; sur loopback on le présente en https."""
+    return url.replace("http://", "https://", 1) if url.startswith("http://") else url
+
 
 class _QuietHandler(wsgiref.simple_server.WSGIRequestHandler):
     def log_message(self, *args):  # pas de bruit dans la console
@@ -102,14 +114,22 @@ def logout():
     _set_state("idle")
 
 
-def start_auth(scopes):
+def start_auth(scopes, redirect_uri=None):
     """Démarre le flow OAuth et renvoie l'URL à ouvrir dans une popup.
 
-    Un mini-serveur local à usage unique capte le retour de Google, écrit le
-    token puis se ferme. L'interface suit l'avancement via auth_state().
+    Sans `redirect_uri` (application locale), un mini-serveur à usage unique
+    capte le retour de Google sur un port loopback aléatoire, écrit le token
+    puis se ferme.
+
+    Avec `redirect_uri` (application déployée sur un serveur), Google renvoie
+    l'utilisateur sur une route de l'application elle-même : c'est alors
+    finish_auth() qui termine l'échange.
     """
     if not CLIENT_SECRET_FILE.exists():
         raise FileNotFoundError("client_secret.json introuvable à la racine du projet.")
+
+    if redirect_uri:
+        return _start_auth_remote(scopes, redirect_uri)
 
     flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_FILE), scopes)
     captured = {}
@@ -139,7 +159,7 @@ def start_auth(scopes):
             if "error=" in uri:
                 _set_state("error", "Autorisation refusée dans la fenêtre Google.")
                 return
-            flow.fetch_token(authorization_response=uri.replace("http://", "https://", 1))
+            flow.fetch_token(authorization_response=_as_secure(uri))
             TOKEN_FILE.write_text(flow.credentials.to_json(), encoding="utf-8")
             _set_state("connected")
         except Exception as exc:  # noqa: BLE001 - le message est renvoyé à l'UI
@@ -153,6 +173,41 @@ def start_auth(scopes):
     _set_state("pending")
     threading.Thread(target=worker, daemon=True).start()
     return auth_url
+
+
+def _start_auth_remote(scopes, redirect_uri):
+    """Mode serveur : Google renvoie sur /oauth/callback de l'application."""
+    if not redirect_uri.startswith("https://") and not _loopback(redirect_uri):
+        raise ValueError(
+            "L'adresse publique doit être en https:// (Google refuse le http:// "
+            "en dehors de localhost). Voir la section « Mise en ligne » du README."
+        )
+
+    flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_FILE), scopes)
+    flow.redirect_uri = redirect_uri
+    auth_url, state = flow.authorization_url(
+        access_type="offline", prompt="consent", include_granted_scopes="true"
+    )
+
+    _pending.clear()  # une seule connexion à la fois
+    _pending[state] = flow
+    _set_state("pending")
+    return auth_url
+
+
+def finish_auth(authorization_response, state):
+    """Termine l'échange OAuth en mode serveur (appelé par /oauth/callback)."""
+    flow = _pending.pop(state, None)
+    if flow is None:
+        _set_state("error", "Demande de connexion inconnue ou expirée.")
+        raise ValueError("Demande de connexion inconnue ou expirée.")
+    try:
+        flow.fetch_token(authorization_response=_as_secure(authorization_response))
+        TOKEN_FILE.write_text(flow.credentials.to_json(), encoding="utf-8")
+        _set_state("connected")
+    except Exception as exc:  # noqa: BLE001
+        _set_state("error", str(exc))
+        raise
 
 
 def build_service(creds):
@@ -214,13 +269,22 @@ def upload_scheduled(service, video_path, title, description, tags,
     request = service.videos().insert(part="snippet,status", body=body,
                                       media_body=media)
 
-    response = None
-    while response is None:
-        if cancelled is not None and cancelled():
-            raise InterruptedError("Upload annulé.")
-        status, response = request.next_chunk()
-        if status and progress_cb:
-            progress_cb(status.progress())
+    try:
+        response = None
+        while response is None:
+            if cancelled is not None and cancelled():
+                raise InterruptedError("Upload annulé.")
+            status, response = request.next_chunk()
+            if status and progress_cb:
+                progress_cb(status.progress())
+    finally:
+        # MediaFileUpload ne ferme le fichier que dans __del__, or la requête
+        # garde une référence : sans fermeture explicite, le fichier reste
+        # verrouillé et ne peut pas être supprimé ensuite.
+        try:
+            media._fd.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     if not response or "id" not in response:
         raise RuntimeError("Réponse inattendue de YouTube (pas d'identifiant vidéo).")
